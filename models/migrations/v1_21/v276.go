@@ -24,8 +24,12 @@ func AddRemoteAddressToMirrors(x *xorm.Engine) error {
 	type PushMirror struct {
 		RemoteAddress string `xorm:"VARCHAR(2048)"`
 	}
+	type Review struct {
+		// default 1 not a approval , 2 is a approval
+		ApprovalType int `xorm:"NOT NULL DEFAULT 1"`
+	}
 
-	if err := x.Sync(new(Mirror), new(PushMirror)); err != nil {
+	if err := x.Sync(new(Mirror), new(PushMirror), new(Review)); err != nil {
 		return err
 	}
 

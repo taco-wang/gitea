@@ -147,6 +147,7 @@ func InitEngine(ctx context.Context) error {
 	xormEngine.SetDefaultContext(ctx)
 
 	SetDefaultEngine(ctx, xormEngine)
+	// db.SyncAllTables()
 	return nil
 }
 

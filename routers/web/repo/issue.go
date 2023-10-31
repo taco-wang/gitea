@@ -598,13 +598,14 @@ func retrieveProjects(ctx *context.Context, repo *repo_model.Repository) {
 
 // repoReviewerSelection items to bee shown
 type repoReviewerSelection struct {
-	IsTeam    bool
-	Team      *organization.Team
-	User      *user_model.User
-	Review    *issues_model.Review
-	CanChange bool
-	Checked   bool
-	ItemID    int64
+	IsTeam       bool
+	Team         *organization.Team
+	User         *user_model.User
+	Review       *issues_model.Review
+	CanChange    bool
+	Checked      bool
+	ItemID       int64
+	ApprovalType int
 }
 
 // RetrieveRepoReviewers find all reviewers of a repository
@@ -667,9 +668,10 @@ func RetrieveRepoReviewers(ctx *context.Context, repo *repo_model.Repository, is
 
 	for _, review := range reviews {
 		tmp := &repoReviewerSelection{
-			Checked: review.Type == issues_model.ReviewTypeRequest,
-			Review:  review,
-			ItemID:  review.ReviewerID,
+			Checked:      review.Type == issues_model.ReviewTypeRequest,
+			Review:       review,
+			ItemID:       review.ReviewerID,
+			ApprovalType: review.ApprovalType,
 		}
 		if review.ReviewerTeamID > 0 {
 			tmp.IsTeam = true
@@ -1756,7 +1758,7 @@ func ViewIssue(ctx *context.Context) {
 		pull.Issue = issue
 		canDelete := false
 		ctx.Data["AllowMerge"] = false
-
+		pull.LoadRequestedReviewers(ctx)
 		if ctx.IsSigned {
 			if err := pull.LoadHeadRepo(ctx); err != nil {
 				log.Error("LoadHeadRepo: %v", err)
@@ -1857,12 +1859,18 @@ func ViewIssue(ctx *context.Context) {
 			if ctx.Doer != nil {
 				showMergeInstructions = pb.CanUserPush(ctx, ctx.Doer)
 			}
+			// RequiredApprovals := 0
+			// for _, v := range pull.RequestedReviewers {
+			// 	if v
+			// }
+			// pb.RequiredApprovals = int64(math.Max(len(pull.RequestedReviewers), pb.RequiredApprovals))
+			pb.RequiredApprovals = int64(len(pull.RequestedReviewers))
 			ctx.Data["ProtectedBranch"] = pb
 			ctx.Data["IsBlockedByApprovals"] = !issues_model.HasEnoughApprovals(ctx, pb, pull)
 			ctx.Data["IsBlockedByRejection"] = issues_model.MergeBlockedByRejectedReview(ctx, pb, pull)
 			ctx.Data["IsBlockedByOfficialReviewRequests"] = issues_model.MergeBlockedByOfficialReviewRequests(ctx, pb, pull)
 			ctx.Data["IsBlockedByOutdatedBranch"] = issues_model.MergeBlockedByOutdatedBranch(pb, pull)
-			ctx.Data["GrantedApprovals"] = issues_model.GetGrantedApprovalsCount(ctx, pb, pull)
+			ctx.Data["GrantedApprovals"] = issues_model.GetGrantedApprovalsCountV2(ctx, pb, pull)
 			ctx.Data["RequireSigned"] = pb.RequireSignedCommits
 			ctx.Data["ChangedProtectedFiles"] = pull.ChangedProtectedFiles
 			ctx.Data["IsBlockedByChangedProtectedFiles"] = len(pull.ChangedProtectedFiles) != 0

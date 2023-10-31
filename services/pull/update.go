@@ -109,6 +109,7 @@ func IsUserAllowedToUpdate(ctx context.Context, pull *issues_model.PullRequest, 
 		BaseRepo:   pull.HeadRepo,
 		HeadBranch: pull.BaseBranch,
 		BaseBranch: pull.HeadBranch,
+		ID:         pull.ID,
 	}
 
 	pb, err := git_model.GetFirstMatchProtectedBranchRule(ctx, pr.BaseRepoID, pr.BaseBranch)

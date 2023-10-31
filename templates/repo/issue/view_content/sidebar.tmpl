@@ -22,7 +22,7 @@
 							<a class="{{if not .CanChange}}ui{{end}} item {{if .Checked}}checked{{end}} {{if not .CanChange}}ban-change{{end}}" href="#" data-id="{{.ItemID}}" data-id-selector="#review_request_{{.ItemID}}" {{if not .CanChange}} data-tooltip-content="{{$.locale.Tr "repo.issues.remove_request_review_block"}}"{{end}}>
 								<span class="octicon-check {{if not .Checked}}gt-invisible{{end}}">{{svg "octicon-check"}}</span>
 								<span class="text">
-									{{ctx.AvatarUtils.Avatar .User 28 "gt-mr-3"}}{{template "repo/search_name" .User}}
+									</i>{{ctx.AvatarUtils.Avatar .User 28 "gt-mr-3"}}{{template "repo/search_name" .User}}
 								</span>
 							</a>
 						{{end}}
@@ -55,6 +55,7 @@
 							{{else if .Team}}
 								<span class="text">{{svg "octicon-people" 20 "gt-mr-3"}}{{$.Issue.Repo.OwnerName}}/{{.Team.Name}}</span>
 							{{end}}
+							{{if eq .ApprovalType 2}}{{svg "shield-solid" "text green"}} <span class="text green">[approver]</span>{{end}}
 						</div>
 						<div class="gt-df gt-ac gt-gap-3">
 							{{if (and $.Permission.IsAdmin (or (eq .Review.Type 1) (eq .Review.Type 3)) (not $.Issue.IsClosed))}}
@@ -83,12 +84,14 @@
 										</form>
 									</div>
 								</div>
+								
 							{{end}}
 							{{if .Review.Stale}}
 								<span data-tooltip-content="{{$.locale.Tr "repo.issues.is_stale"}}">
 									{{svg "octicon-hourglass" 16}}
 								</span>
 							{{end}}
+							
 							{{if .CanChange}}
 								<a href="#" class="ui muted icon re-request-review{{if .Checked}} checked{{end}}" data-tooltip-content="{{if .Checked}}{{$.locale.Tr "repo.issues.remove_request_review"}}{{else}}{{$.locale.Tr "repo.issues.re_request_review"}}{{end}}" data-issue-id="{{$.Issue.ID}}" data-id="{{.ItemID}}" data-update-url="{{$.RepoLink}}/issues/request_review">{{if .Checked}}{{svg "octicon-trash"}}{{else}}{{svg "octicon-sync"}}{{end}}</a>
 							{{end}}

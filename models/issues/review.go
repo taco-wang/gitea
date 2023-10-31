@@ -127,6 +127,9 @@ type Review struct {
 	CodeComments CodeComments `xorm:"-"`
 
 	Comments []*Comment `xorm:"-"`
+
+	// default 1 not a approval , 2 is a approval
+	ApprovalType int `xorm:"NOT NULL DEFAULT 1"`
 }
 
 func init() {
@@ -228,6 +231,7 @@ type CreateReviewOptions struct {
 	Official     bool
 	CommitID     string
 	Stale        bool
+	ApprovalType int
 }
 
 // IsOfficialReviewer check if at least one of the provided reviewers can make official reviews in issue (counts towards required approvals)
@@ -278,6 +282,9 @@ func IsOfficialReviewerTeam(ctx context.Context, issue *Issue, team *organizatio
 
 // CreateReview creates a new review based on opts
 func CreateReview(ctx context.Context, opts CreateReviewOptions) (*Review, error) {
+	if opts.ApprovalType == 0 {
+		opts.ApprovalType = 1
+	}
 	review := &Review{
 		Type:         opts.Type,
 		Issue:        opts.Issue,
@@ -288,6 +295,7 @@ func CreateReview(ctx context.Context, opts CreateReviewOptions) (*Review, error
 		Official:     opts.Official,
 		CommitID:     opts.CommitID,
 		Stale:        opts.Stale,
+		ApprovalType: opts.ApprovalType,
 	}
 	if opts.Reviewer != nil {
 		review.ReviewerID = opts.Reviewer.ID
@@ -566,7 +574,7 @@ func AddReviewRequest(ctx context.Context, issue *Issue, reviewer, doer *user_mo
 		return nil, err
 	}
 	defer committer.Close()
-	sess := db.GetEngine(ctx)
+	// sess := db.GetEngine(ctx)
 
 	review, err := GetReviewByIssueIDAndUserID(ctx, issue.ID, reviewer.ID)
 	if err != nil && !IsErrReviewNotExist(err) {
@@ -578,21 +586,75 @@ func AddReviewRequest(ctx context.Context, issue *Issue, reviewer, doer *user_mo
 		return nil, nil
 	}
 
-	official, err := IsOfficialReviewer(ctx, issue, reviewer, doer)
-	if err != nil {
-		return nil, err
-	} else if official {
-		if _, err := sess.Exec("UPDATE `review` SET official=? WHERE issue_id=? AND reviewer_id=?", false, issue.ID, reviewer.ID); err != nil {
-			return nil, err
-		}
-	}
+	// official, err := IsOfficialReviewer(ctx, issue, reviewer, doer)
+	// if err != nil {
+	// 	return nil, err
+	// } else if official {
+	// 	if _, err := sess.Exec("UPDATE `review` SET official=? WHERE issue_id=? AND reviewer_id=?", false, issue.ID, reviewer.ID); err != nil {
+	// 		return nil, err
+	// 	}
+	// }
 
 	review, err = CreateReview(ctx, CreateReviewOptions{
 		Type:     ReviewTypeRequest,
 		Issue:    issue,
 		Reviewer: reviewer,
-		Official: official,
+		Official: false,
 		Stale:    false,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	comment, err := CreateComment(ctx, &CreateCommentOptions{
+		Type:            CommentTypeReviewRequest,
+		Doer:            doer,
+		Repo:            issue.Repo,
+		Issue:           issue,
+		RemovedAssignee: false,       // Use RemovedAssignee as !isRequest
+		AssigneeID:      reviewer.ID, // Use AssigneeID as reviewer ID
+		ReviewID:        review.ID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return comment, committer.Commit()
+}
+func AddReviewApproverRequest(ctx context.Context, issue *Issue, reviewer, doer *user_model.User) (*Comment, error) {
+	ctx, committer, err := db.TxContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer committer.Close()
+	// sess := db.GetEngine(ctx)
+
+	review, err := GetReviewByIssueIDAndUserID(ctx, issue.ID, reviewer.ID)
+	if err != nil && !IsErrReviewNotExist(err) {
+		return nil, err
+	}
+
+	// skip it when reviewer hase been request to review
+	if review != nil && review.Type == ReviewTypeRequest {
+		return nil, nil
+	}
+
+	// official, err := IsOfficialReviewer(ctx, issue, reviewer, doer)
+	// if err != nil {
+	// 	return nil, err
+	// } else if official {
+	// 	if _, err := sess.Exec("UPDATE `review` SET official=? WHERE issue_id=? AND reviewer_id=?", false, issue.ID, reviewer.ID); err != nil {
+	// 		return nil, err
+	// 	}
+	// }
+
+	review, err = CreateReview(ctx, CreateReviewOptions{
+		Type:         ReviewTypeRequest,
+		Issue:        issue,
+		Reviewer:     reviewer,
+		Official:     false,
+		Stale:        false,
+		ApprovalType: 2,
 	})
 	if err != nil {
 		return nil, err

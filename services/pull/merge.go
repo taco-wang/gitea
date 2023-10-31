@@ -387,11 +387,25 @@ func runMergeCommand(ctx *mergeContext, mergeStyle repo_model.MergeStyle, cmd *g
 var escapedSymbols = regexp.MustCompile(`([*[?! \\])`)
 
 // IsUserAllowedToMerge check if user is allowed to merge PR with given permissions and branch protections
-func IsUserAllowedToMerge(ctx context.Context, pr *issues_model.PullRequest, p access_model.Permission, user *user_model.User) (bool, error) {
+func IsUserAllowedToMerge(ctx context.Context, pr *issues_model.PullRequest, p access_model.Permission, user *user_model.User) (allowed bool, err error) {
 	if user == nil {
 		return false, nil
 	}
-
+	if pr.Issue == nil {
+		pr, err = issues_model.GetPullRequestByID(ctx, pr.ID)
+		if err != nil {
+			return false, err
+		}
+		pr.LoadIssue(ctx)
+	}
+	// when all the approvers approved, anyone can merge
+	pr.LoadRequestedReviewers(ctx)
+	approved := issues_model.GetGrantedApprovalsCount(ctx, &git_model.ProtectedBranch{
+		DismissStaleApprovals: true,
+	}, pr)
+	if approved >= int64(len(pr.RequestedReviewers)) {
+		return true, nil
+	}
 	pb, err := git_model.GetFirstMatchProtectedBranchRule(ctx, pr.BaseRepoID, pr.BaseBranch)
 	if err != nil {
 		return false, err

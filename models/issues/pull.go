@@ -27,6 +27,8 @@ import (
 	"xorm.io/builder"
 )
 
+const MAGIC_OWNER_NUM = 3
+
 // ErrPullRequestNotExist represents a "PullRequestNotExist" kind of error.
 type ErrPullRequestNotExist struct {
 	ID         int64
@@ -200,7 +202,8 @@ type PullRequest struct {
 
 	isHeadRepoLoaded bool `xorm:"-"`
 
-	Flow PullRequestFlow `xorm:"NOT NULL DEFAULT 0"`
+	Flow      PullRequestFlow    `xorm:"NOT NULL DEFAULT 0"`
+	Approvals []*user_model.User `xorm:"-"`
 }
 
 func init() {
@@ -822,10 +825,16 @@ func (pr *PullRequest) Mergeable() bool {
 
 // HasEnoughApprovals returns true if pr has enough granted approvals.
 func HasEnoughApprovals(ctx context.Context, protectBranch *git_model.ProtectedBranch, pr *PullRequest) bool {
+	pr.LoadRequestedReviewers(ctx)
+	protectBranch.RequiredApprovals = int64(len(pr.RequestedReviewers))
 	if protectBranch.RequiredApprovals == 0 {
 		return true
 	}
-	return GetGrantedApprovalsCount(ctx, protectBranch, pr) >= protectBranch.RequiredApprovals
+	approval := GetApprovalsCount(ctx, protectBranch, pr)
+	grantApproval := GetGrantedApprovalsCountV2(ctx, protectBranch, pr)
+	protectBranch.RequiredApprovals = approval
+	return grantApproval >= approval
+	// return GetGrantedApprovalsCount(ctx, protectBranch, pr) >= protectBranch.RequiredApprovals
 }
 
 // GetGrantedApprovalsCount returns the number of granted approvals for pr. A granted approval must be authored by a user in an approval whitelist.
@@ -834,6 +843,42 @@ func GetGrantedApprovalsCount(ctx context.Context, protectBranch *git_model.Prot
 		And("type = ?", ReviewTypeApprove).
 		And("official = ?", true).
 		And("dismissed = ?", false)
+	if protectBranch.DismissStaleApprovals {
+		sess = sess.And("stale = ?", false)
+	}
+	approvals, err := sess.Count(new(Review))
+	if err != nil {
+		log.Error("GetGrantedApprovalsCount: %v", err)
+		return 0
+	}
+
+	return approvals
+}
+
+func GetGrantedApprovalsCountV2(ctx context.Context, protectBranch *git_model.ProtectedBranch, pr *PullRequest) int64 {
+	sess := db.GetEngine(ctx).Where("issue_id = ?", pr.IssueID).
+		And("type = ?", ReviewTypeApprove).
+		// doesn't understand official column
+		// And("official = ?", true).
+		And("dismissed = ?", false).
+		And("approval_type = ?", 2)
+	if protectBranch.DismissStaleApprovals {
+		sess = sess.And("stale = ?", false)
+	}
+	approvals, err := sess.Count(new(Review))
+	if err != nil {
+		log.Error("GetGrantedApprovalsCount: %v", err)
+		return 0
+	}
+
+	return approvals
+}
+func GetApprovalsCount(ctx context.Context, protectBranch *git_model.ProtectedBranch, pr *PullRequest) int64 {
+	sess := db.GetEngine(ctx).Where("issue_id = ?", pr.IssueID).
+		// And("type = ?", ReviewTypeApprove).
+		// And("official = ?", true).
+		And("dismissed = ?", false).
+		And("approval_type = ?", 2)
 	if protectBranch.DismissStaleApprovals {
 		sess = sess.And("stale = ?", false)
 	}
@@ -886,23 +931,48 @@ func MergeBlockedByOfficialReviewRequests(ctx context.Context, protectBranch *gi
 func MergeBlockedByOutdatedBranch(protectBranch *git_model.ProtectedBranch, pr *PullRequest) bool {
 	return protectBranch.BlockOnOutdatedBranch && pr.CommitsBehind > 0
 }
+func FindCodeowners(commit *git.Commit, path string) (codeowner string, err error) {
+	const CODEOWNERS = "OWNERS"
+	// check the path contains /
+	if !strings.Contains(path, "/") {
+		ok, err := commit.HasFile(CODEOWNERS)
+		if err != nil && !git.IsErrNotExist(err) {
+			return CODEOWNERS, err
+		}
+		if ok {
+			return CODEOWNERS, nil
+		}
+		return "", nil
+	}
+	paths := strings.Split(path, "/")
+	tmpPath := strings.Join(paths[0:len(paths)-1], "/") + "/" + CODEOWNERS
+	ok, err := commit.HasFile(tmpPath)
+	if err != nil && !git.IsErrNotExist(err) {
+		return "", err
+	}
+	if ok {
+		return tmpPath, err
+	}
+	return FindCodeowners(commit, strings.Join(paths[0:len(paths)-2], "/")+CODEOWNERS)
+
+}
 
 func PullRequestCodeOwnersReview(ctx context.Context, pull *Issue, pr *PullRequest) error {
-	files := []string{"CODEOWNERS", "docs/CODEOWNERS", ".gitea/CODEOWNERS"}
-
 	if pr.IsWorkInProgress() {
 		return nil
 	}
-
-	if err := pr.LoadBaseRepo(ctx); err != nil {
-		return err
-	}
-
 	repo, err := git.OpenRepository(ctx, pr.BaseRepo.RepoPath())
 	if err != nil {
 		return err
 	}
 	defer repo.Close()
+	changedFiles, err := repo.GetFilesChangedBetween(git.BranchPrefix+pr.BaseBranch, pr.GetGitRefName())
+	if err != nil {
+		return err
+	}
+	if err := pr.LoadBaseRepo(ctx); err != nil {
+		return err
+	}
 
 	branch, err := repo.GetDefaultBranch()
 	if err != nil {
@@ -913,6 +983,57 @@ func PullRequestCodeOwnersReview(ctx context.Context, pull *Issue, pr *PullReque
 	if err != nil {
 		return err
 	}
+	uniqCodeownerFiles := make(map[string][]*user_model.User)
+	uniqCodeowner := make(map[string]*user_model.User)
+	uniqApproval := make(map[string]*user_model.User)
+	// for better performance, check the owner file only
+	for _, changedFile := range changedFiles {
+		log.Info("changedFile:%+v", changedFile)
+		codeowners, err := FindCodeowners(commit, changedFile)
+		log.Info("code===>: %+v, %+v", codeowners, err)
+		if err != nil {
+			log.Error("get codeowner error : %+v, file: %+v", err, changedFile)
+		}
+		if err == nil && len(codeowners) > 0 {
+			if uniqCodeownerFiles[codeowners] != nil {
+				continue
+			}
+			// read the content
+			if blob, err := commit.GetBlobByPath(codeowners); err == nil {
+				data, err := blob.GetBlobContent(setting.UI.MaxDisplayFileSize)
+				if err != nil {
+					log.Error("get codeowner error : %+v, file: %+v", err, changedFile)
+					continue
+				}
+
+				rules, _ := GetCodeOwnersFromContentV2(ctx, data)
+				for _, rule := range rules {
+					if len(rule.Users) > MAGIC_OWNER_NUM {
+						rule.Users = rule.Users[0:MAGIC_OWNER_NUM]
+					}
+					for _, user := range rule.Users {
+						if user.ID != pull.Poster.ID {
+							uniqCodeownerFiles[changedFile] = append(uniqCodeownerFiles[changedFile], user)
+							// continue
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, users := range uniqCodeownerFiles {
+		// the first user is the owner and approver
+		if len(users) > 0 {
+			uniqApproval[users[0].Name] = users[0]
+		}
+		for _, u := range users {
+			if uniqCodeowner[u.Name] == nil {
+				uniqCodeowner[u.Name] = u
+			}
+		}
+	}
+
+	files := []string{"CODEOWNERS", "docs/CODEOWNERS", ".gitea/CODEOWNERS"}
 
 	var data string
 	for _, file := range files {
@@ -925,10 +1046,6 @@ func PullRequestCodeOwnersReview(ctx context.Context, pull *Issue, pr *PullReque
 	}
 
 	rules, _ := GetCodeOwnersFromContent(ctx, data)
-	changedFiles, err := repo.GetFilesChangedBetween(git.BranchPrefix+pr.BaseBranch, pr.GetGitRefName())
-	if err != nil {
-		return err
-	}
 
 	uniqUsers := make(map[int64]*user_model.User)
 	uniqTeams := make(map[string]*org_model.Team)
@@ -959,6 +1076,21 @@ func PullRequestCodeOwnersReview(ctx context.Context, pull *Issue, pr *PullReque
 			return err
 		}
 	}
+	for _, u := range uniqApproval {
+		if _, err := AddReviewApproverRequest(ctx, pull, u, pull.Poster); err != nil {
+			log.Warn("Failed add assignee user: %s to PR review: %s#%d, error: %s", u.Name, pr.BaseRepo.Name, pr.ID, err)
+			// return err
+		}
+	}
+	for _, u := range uniqCodeowner {
+		if uniqApproval[u.Name] != nil {
+			continue
+		}
+		if _, err := AddReviewRequest(ctx, pull, u, pull.Poster); err != nil {
+			log.Warn("Failed add assignee user: %s to PR review: %s#%d, error: %s", u.Name, pr.BaseRepo.Name, pr.ID, err)
+			// return err
+		}
+	}
 
 	return nil
 }
@@ -986,6 +1118,37 @@ func GetCodeOwnersFromContent(ctx context.Context, data string) ([]*CodeOwnerRul
 			continue
 		}
 		rule, wr := ParseCodeOwnersLine(ctx, tokens)
+		for _, w := range wr {
+			warnings = append(warnings, fmt.Sprintf("Line: %d: %s", i+1, w))
+		}
+		if rule == nil {
+			continue
+		}
+
+		rules = append(rules, rule)
+	}
+
+	return rules, warnings
+}
+
+func GetCodeOwnersFromContentV2(ctx context.Context, data string) ([]*CodeOwnerRule, []string) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	rules := make([]*CodeOwnerRule, 0)
+	lines := strings.Split(data, "\n")
+	warnings := make([]string, 0)
+
+	for i, line := range lines {
+		tokens := TokenizeCodeOwnersLineV2(line)
+		if len(tokens) == 0 {
+			continue
+		} else if len(tokens) > 2 {
+			warnings = append(warnings, fmt.Sprintf("Line: %d: incorrect format", i+1))
+			continue
+		}
+		rule, wr := ParseCodeOwnersLineV2(ctx, tokens)
 		for _, w := range wr {
 			warnings = append(warnings, fmt.Sprintf("Line: %d: %s", i+1, w))
 		}
@@ -1068,6 +1231,40 @@ func ParseCodeOwnersLine(ctx context.Context, tokens []string) (*CodeOwnerRule, 
 
 	return rule, warnings
 }
+func ParseCodeOwnersLineV2(ctx context.Context, tokens []string) (*CodeOwnerRule, []string) {
+	var err error
+	rule := &CodeOwnerRule{
+		Users:    make([]*user_model.User, 0),
+		Teams:    make([]*org_model.Team, 0),
+		Negative: strings.HasPrefix(tokens[0], "!"),
+	}
+
+	warnings := make([]string, 0)
+
+	rule.Rule, err = regexp.Compile(fmt.Sprintf("^%s$", strings.TrimPrefix(tokens[0], "!")))
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("incorrect codeowner regexp: %s", err))
+		return nil, warnings
+	}
+
+	for _, user := range tokens {
+		// user = strings.TrimPrefix(user, "@")
+
+		u, err := user_model.GetUserByName(ctx, user)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("incorrect codeowner user: %s", user))
+			continue
+		}
+		rule.Users = append(rule.Users, u)
+	}
+
+	if (len(rule.Users) == 0) && (len(rule.Teams) == 0) {
+		warnings = append(warnings, "no users/groups matched")
+		return nil, warnings
+	}
+
+	return rule, warnings
+}
 
 func TokenizeCodeOwnersLine(line string) []string {
 	if len(line) == 0 {
@@ -1094,6 +1291,40 @@ func TokenizeCodeOwnersLine(line string) []string {
 				tokens = append(tokens, token)
 				token = ""
 			}
+		} else {
+			token += string(char)
+		}
+	}
+
+	if len(token) > 0 {
+		tokens = append(tokens, token)
+	}
+
+	return tokens
+}
+func TokenizeCodeOwnersLineV2(line string) []string {
+	if len(line) == 0 {
+		return nil
+	}
+
+	line = strings.TrimSpace(line)
+	line = strings.ReplaceAll(line, "\t", " ")
+
+	tokens := make([]string, 0)
+
+	escape := false
+	token := ""
+	for _, char := range line {
+		if escape {
+			token += string(char)
+			escape = false
+		} else if string(char) == "\\" {
+			escape = true
+		} else if string(char) == "#" {
+			break
+		} else if string(char) == " " {
+			// 出现了空格直接忽略
+			break
 		} else {
 			token += string(char)
 		}
