@@ -55,7 +55,7 @@
 							{{else if .Team}}
 								<span class="text">{{svg "octicon-people" 20 "gt-mr-3"}}{{$.Issue.Repo.OwnerName}}/{{.Team.Name}}</span>
 							{{end}}
-							{{if eq .ApprovalType 2}}{{svg "shield-solid" "text green"}} <span class="text green">[approver]</span>{{end}}
+							{{if eq .ApprovalType 2}}{{svg "shield-solid" "text green"}} <span class="text green">[owner]</span>{{end}}
 						</div>
 						<div class="gt-df gt-ac gt-gap-3">
 							{{if (and $.Permission.IsAdmin (or (eq .Review.Type 1) (eq .Review.Type 3)) (not $.Issue.IsClosed))}}

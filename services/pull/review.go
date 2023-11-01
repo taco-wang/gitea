@@ -117,19 +117,23 @@ func CreateCodeComment(ctx context.Context, doer *user_model.User, gitRepo *git.
 
 		return comment, nil
 	}
-
+	requestView, _ := issues_model.GetCurrentRequestReview(ctx, doer, issue)
 	review, err := issues_model.GetCurrentReview(ctx, doer, issue)
 	if err != nil {
 		if !issues_model.IsErrReviewNotExist(err) {
 			return nil, err
 		}
-
+		approvalType := 1
+		if requestView != nil {
+			approvalType = requestView.ApprovalType
+		}
 		if review, err = issues_model.CreateReview(ctx, issues_model.CreateReviewOptions{
-			Type:     issues_model.ReviewTypePending,
-			Reviewer: doer,
-			Issue:    issue,
-			Official: false,
-			CommitID: latestCommitID,
+			Type:         issues_model.ReviewTypePending,
+			Reviewer:     doer,
+			Issue:        issue,
+			Official:     false,
+			CommitID:     latestCommitID,
+			ApprovalType: approvalType,
 		}); err != nil {
 			return nil, err
 		}

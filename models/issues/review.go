@@ -328,6 +328,25 @@ func GetCurrentReview(ctx context.Context, reviewer *user_model.User, issue *Iss
 	reviews[0].Issue = issue
 	return reviews[0], nil
 }
+func GetCurrentRequestReview(ctx context.Context, reviewer *user_model.User, issue *Issue) (*Review, error) {
+	if reviewer == nil {
+		return nil, nil
+	}
+	reviews, err := FindReviews(ctx, FindReviewOptions{
+		Type:       ReviewTypeRequest,
+		IssueID:    issue.ID,
+		ReviewerID: reviewer.ID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(reviews) == 0 {
+		return nil, ErrReviewNotExist{}
+	}
+	reviews[0].Reviewer = reviewer
+	reviews[0].Issue = issue
+	return reviews[0], nil
+}
 
 // ReviewExists returns whether a review exists for a particular line of code in the PR
 func ReviewExists(issue *Issue, treePath string, line int64) (bool, error) {
@@ -357,7 +376,10 @@ func SubmitReview(doer *user_model.User, issue *Issue, reviewType ReviewType, co
 	sess := db.GetEngine(ctx)
 
 	official := false
-
+	requestView, err := GetCurrentRequestReview(ctx, doer, issue)
+	if err != nil {
+		return nil, nil, err
+	}
 	review, err := GetCurrentReview(ctx, doer, issue)
 	if err != nil {
 		if !IsErrReviewNotExist(err) {
@@ -380,13 +402,14 @@ func SubmitReview(doer *user_model.User, issue *Issue, reviewType ReviewType, co
 
 		// No current review. Create a new one!
 		if review, err = CreateReview(ctx, CreateReviewOptions{
-			Type:     reviewType,
-			Issue:    issue,
-			Reviewer: doer,
-			Content:  content,
-			Official: official,
-			CommitID: commitID,
-			Stale:    stale,
+			Type:         reviewType,
+			Issue:        issue,
+			Reviewer:     doer,
+			Content:      content,
+			Official:     official,
+			CommitID:     commitID,
+			Stale:        stale,
+			ApprovalType: requestView.ApprovalType,
 		}); err != nil {
 			return nil, nil, err
 		}
@@ -596,11 +619,12 @@ func AddReviewRequest(ctx context.Context, issue *Issue, reviewer, doer *user_mo
 	// }
 
 	review, err = CreateReview(ctx, CreateReviewOptions{
-		Type:     ReviewTypeRequest,
-		Issue:    issue,
-		Reviewer: reviewer,
-		Official: false,
-		Stale:    false,
+		Type:         ReviewTypeRequest,
+		Issue:        issue,
+		Reviewer:     reviewer,
+		Official:     false,
+		Stale:        false,
+		ApprovalType: 1,
 	})
 	if err != nil {
 		return nil, err

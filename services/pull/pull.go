@@ -313,6 +313,10 @@ func AddTestPullRequestTask(doer *user_model.User, repoID int64, branch string, 
 			}
 
 			AddToTaskQueue(ctx, pr)
+			pr.LoadIssue(ctx)
+			pr.Issue.LoadRepo(ctx)
+			// pr.LoadBaseRepo(ctx)
+			issues_model.PullRequestCodeOwnersReview(ctx, pr.Issue, pr)
 			comment, err := CreatePushPullComment(ctx, doer, pr, oldCommitID, newCommitID)
 			if err == nil && comment != nil {
 				notify_service.PullRequestPushCommits(ctx, doer, pr, comment)

@@ -830,7 +830,7 @@ func HasEnoughApprovals(ctx context.Context, protectBranch *git_model.ProtectedB
 	if protectBranch.RequiredApprovals == 0 {
 		return true
 	}
-	approval := GetApprovalsCount(ctx, protectBranch, pr)
+	approval := GetApprovalsCountV2(ctx, protectBranch, pr)
 	grantApproval := GetGrantedApprovalsCountV2(ctx, protectBranch, pr)
 	protectBranch.RequiredApprovals = approval
 	return grantApproval >= approval
@@ -856,22 +856,44 @@ func GetGrantedApprovalsCount(ctx context.Context, protectBranch *git_model.Prot
 }
 
 func GetGrantedApprovalsCountV2(ctx context.Context, protectBranch *git_model.ProtectedBranch, pr *PullRequest) int64 {
-	sess := db.GetEngine(ctx).Where("issue_id = ?", pr.IssueID).
-		And("type = ?", ReviewTypeApprove).
-		// doesn't understand official column
-		// And("official = ?", true).
-		And("dismissed = ?", false).
-		And("approval_type = ?", 2)
-	if protectBranch.DismissStaleApprovals {
-		sess = sess.And("stale = ?", false)
-	}
-	approvals, err := sess.Count(new(Review))
+	var res []*Review
+	// only search the newest record
+	err := db.GetEngine(ctx).SQL(`
+		SELECT * FROM review WHERE id IN (SELECT max(id) as id FROM review WHERE 
+		issue_id = ? AND reviewer_team_id = 0 AND type in (?, ?, ?) AND dismissed = ? 
+		AND original_author_id = 0 GROUP BY issue_id, reviewer_id) and type = ?  and approval_type = 2 
+		AND stale = 0
+		ORDER BY review.updated_unix ASC`,
+		pr.IssueID, ReviewTypeApprove, ReviewTypeRequest, ReviewTypeReject, false, ReviewTypeApprove).Find(&res)
+	// if protectBranch.DismissStaleApprovals {
+	// 	sess = sess.And("stale = ?", false)
+	// }
+	// approvals, err := sess.Count(new(Review))
 	if err != nil {
 		log.Error("GetGrantedApprovalsCount: %v", err)
 		return 0
 	}
-
-	return approvals
+	return int64(len(res))
+}
+func GetApprovalsCountV2(ctx context.Context, protectBranch *git_model.ProtectedBranch, pr *PullRequest) int64 {
+	var res []*Review
+	// only search the newest record
+	err := db.GetEngine(ctx).SQL(`
+		SELECT * FROM review WHERE id IN (SELECT max(id) as id FROM review WHERE 
+		issue_id = ? AND reviewer_team_id = 0 AND type in (?, ?, ?) AND dismissed = ? 
+		AND original_author_id = 0 GROUP BY issue_id, reviewer_id)  and approval_type = 2 
+		AND stale = 0
+		ORDER BY review.updated_unix ASC`,
+		pr.IssueID, ReviewTypeApprove, ReviewTypeRequest, ReviewTypeReject, false, ReviewTypeApprove).Find(&res)
+	// if protectBranch.DismissStaleApprovals {
+	// 	sess = sess.And("stale = ?", false)
+	// }
+	// approvals, err := sess.Count(new(Review))
+	if err != nil {
+		log.Error("GetGrantedApprovalsCount: %v", err)
+		return 0
+	}
+	return int64(len(res))
 }
 func GetApprovalsCount(ctx context.Context, protectBranch *git_model.ProtectedBranch, pr *PullRequest) int64 {
 	sess := db.GetEngine(ctx).Where("issue_id = ?", pr.IssueID).
