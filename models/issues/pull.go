@@ -1017,7 +1017,7 @@ func PullRequestCodeOwnersReview(ctx context.Context, pull *Issue, pr *PullReque
 			log.Error("get codeowner error : %+v, file: %+v", err, changedFile)
 		}
 		if err == nil && len(codeowners) > 0 {
-			if uniqCodeownerFiles[codeowners] != nil {
+			if uniqCodeownerFiles[changedFile] != nil {
 				continue
 			}
 			// read the content
@@ -1027,16 +1027,28 @@ func PullRequestCodeOwnersReview(ctx context.Context, pull *Issue, pr *PullReque
 					log.Error("get codeowner error : %+v, file: %+v", err, changedFile)
 					continue
 				}
-
 				rules, _ := GetCodeOwnersFromContentV2(ctx, data)
+				var checked int
 				for _, rule := range rules {
 					if len(rule.Users) > MAGIC_OWNER_NUM {
 						rule.Users = rule.Users[0:MAGIC_OWNER_NUM]
 					}
+					// need to check rule
 					for _, user := range rule.Users {
-						if user.ID != pull.Poster.ID {
+						if checked >= MAGIC_OWNER_NUM {
+							break
+						}
+						if user.ID == pull.Poster.ID {
+							continue
+						}
+						if rule.Rule == nil {
 							uniqCodeownerFiles[changedFile] = append(uniqCodeownerFiles[changedFile], user)
-							// continue
+							checked++
+						} else {
+							if rule.Rule.MatchString(changedFile) {
+								uniqCodeownerFiles[changedFile] = append(uniqCodeownerFiles[changedFile], user)
+								checked++
+							}
 						}
 					}
 				}
@@ -1262,13 +1274,16 @@ func ParseCodeOwnersLineV2(ctx context.Context, tokens []string) (*CodeOwnerRule
 	}
 
 	warnings := make([]string, 0)
-
-	rule.Rule, err = regexp.Compile(fmt.Sprintf("^%s$", strings.TrimPrefix(tokens[0], "!")))
+	if len(tokens) > 1 {
+		rule.Rule, err = regexp.Compile(fmt.Sprintf("^%s$", strings.TrimPrefix(tokens[0], "!")))
+	}
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("incorrect codeowner regexp: %s", err))
 		return nil, warnings
 	}
-
+	if len(tokens) > 1 {
+		tokens = tokens[1:]
+	}
 	for _, user := range tokens {
 		// user = strings.TrimPrefix(user, "@")
 
@@ -1346,7 +1361,10 @@ func TokenizeCodeOwnersLineV2(line string) []string {
 			break
 		} else if string(char) == " " {
 			// 出现了空格直接忽略
-			break
+			if len(token) > 0 {
+				tokens = append(tokens, token)
+				token = ""
+			}
 		} else {
 			token += string(char)
 		}
