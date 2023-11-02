@@ -965,8 +965,14 @@ func FindCodeowners(commit *git.Commit, path string) (codeowner string, err erro
 		}
 		return "", nil
 	}
+	var tmpPath string
 	paths := strings.Split(path, "/")
-	tmpPath := strings.Join(paths[0:len(paths)-1], "/") + "/" + CODEOWNERS
+	// if the path ends with CODEOWNERS directly find the file
+	if strings.HasSuffix(path, CODEOWNERS) {
+		tmpPath = path
+	} else {
+		tmpPath = strings.Join(paths[0:len(paths)-1], "/") + "/" + CODEOWNERS
+	}
 	ok, err := commit.HasFile(tmpPath)
 	if err != nil && !git.IsErrNotExist(err) {
 		return "", err
