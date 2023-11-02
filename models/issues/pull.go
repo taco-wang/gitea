@@ -882,9 +882,8 @@ func GetApprovalsCountV2(ctx context.Context, protectBranch *git_model.Protected
 		SELECT * FROM review WHERE id IN (SELECT max(id) as id FROM review WHERE 
 		issue_id = ? AND reviewer_team_id = 0 AND type in (?, ?, ?) AND dismissed = ? 
 		AND original_author_id = 0 GROUP BY issue_id, reviewer_id)  and approval_type = 2 
-		AND stale = 0
 		ORDER BY review.updated_unix ASC`,
-		pr.IssueID, ReviewTypeApprove, ReviewTypeRequest, ReviewTypeReject, false, ReviewTypeApprove).Find(&res)
+		pr.IssueID, ReviewTypeApprove, ReviewTypeRequest, ReviewTypeReject, false).Find(&res)
 	// if protectBranch.DismissStaleApprovals {
 	// 	sess = sess.And("stale = ?", false)
 	// }
@@ -975,7 +974,8 @@ func FindCodeowners(commit *git.Commit, path string) (codeowner string, err erro
 	if ok {
 		return tmpPath, err
 	}
-	return FindCodeowners(commit, strings.Join(paths[0:len(paths)-2], "/")+CODEOWNERS)
+	paths = append(paths[0:len(paths)-2], CODEOWNERS)
+	return FindCodeowners(commit, strings.Join(paths, "/"))
 
 }
 

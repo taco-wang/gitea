@@ -617,14 +617,17 @@ func AddReviewRequest(ctx context.Context, issue *Issue, reviewer, doer *user_mo
 	// 		return nil, err
 	// 	}
 	// }
-
+	approveType := 1
+	if review != nil {
+		approveType = review.ApprovalType
+	}
 	review, err = CreateReview(ctx, CreateReviewOptions{
 		Type:         ReviewTypeRequest,
 		Issue:        issue,
 		Reviewer:     reviewer,
 		Official:     false,
 		Stale:        false,
-		ApprovalType: 1,
+		ApprovalType: approveType,
 	})
 	if err != nil {
 		return nil, err
